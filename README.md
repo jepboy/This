@@ -56,7 +56,13 @@ On Windows, the safest route is to boot a Linux live USB and follow the steps ab
 
 ---
 
-# embthumbs
+# EMB thumbnails
+
+**Windows users: see [windows/README.md](windows/README.md).** It has a double-click installer
+that shows EMB previews directly in File Explorer, with no Python needed.
+
+The rest of this section covers `embthumbs.py`, a Python script that builds an HTML gallery
+on any operating system.
 
 See the thumbnails of Wilcom **.EMB** embroidery files, without Wilcom installed.
 One Python 3 file, no dependencies, works on Windows, macOS and Linux. It only reads your files.
