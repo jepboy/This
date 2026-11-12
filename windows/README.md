@@ -5,7 +5,8 @@ the same way you see photo thumbnails. No Python and no Wilcom software needed.
 
 ## Install (one double-click)
 
-1. Download **[`dist/EMB Thumbnails Setup.exe`](dist/EMB%20Thumbnails%20Setup.exe)**.
+1. Download **[`dist/EMB-Thumbnails-Setup.zip`](dist/EMB-Thumbnails-Setup.zip)** (click **Download raw file**, the ⤓ button), right-click it and choose **Extract All**.
+   The bare [`.exe`](dist/EMB%20Thumbnails%20Setup.exe) is there too, but browsers often block .exe downloads.
 2. Double-click it and click **OK**.
    - If Windows shows *"Windows protected your PC"*, click **More info**, then **Run anyway**.
      This appears because the program isn't code-signed.
