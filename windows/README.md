@@ -34,7 +34,7 @@ Requirements: Windows 10 or 11, 64-bit (Intel/AMD). Your EMB files are only read
 
 An EMB file is a Microsoft "compound document" container. Wilcom keeps a small preview picture
 inside it, usually in a part named `DESIGN_ICON`. This add-on is a standard Windows *thumbnail
-provider*. When Explorer asks for a thumbnail, the add-on finds that picture (BMP, PNG, JPEG, GIF
+provider*. When Explorer asks for a thumbnail, the add-on decompresses that picture (Wilcom stores it zlib-compressed: BMP, PNG, JPEG, GIF
 or Windows metafile), enlarges it to the size Explorer wants, and hands it back. If a file has no
 preview, Explorer shows the normal icon.
 

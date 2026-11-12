@@ -10,10 +10,11 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include <string>
 
 #define APP_NAME L"EMB Thumbnails"
-#define APP_VERSION L"1.0.0"
+#define APP_VERSION L"1.1.0"
 #define CLSID_STR L"{0678313A-B65C-412B-B332-4A248F11483E}"
 #define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\EmbThumbnails"
 #define IDR_DLL 101
@@ -92,6 +93,48 @@ static HRESULT callDll(const std::wstring& dll, const char* fn) {
     return hr;
 }
 
+// Windows remembers thumbnails (and failures) in thumbcache_*.db, which
+// Explorer keeps open. Close Explorer, delete the cache, start it again.
+static void refreshThumbnailCache() {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    DWORD mySession = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &mySession);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe = {sizeof(pe)};
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+            DWORD sess = 0;
+            if (_wcsicmp(pe.szExeFile, L"explorer.exe") || !ProcessIdToSessionId(pe.th32ProcessID, &sess) || sess != mySession)
+                continue;
+            HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
+            if (h) {
+                TerminateProcess(h, 1);
+                WaitForSingleObject(h, 5000);
+                CloseHandle(h);
+            }
+        }
+        CloseHandle(snap);
+    }
+    wchar_t* p = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &p))) {
+        std::wstring dir = std::wstring(p) + L"\\Microsoft\\Windows\\Explorer";
+        for (int attempt = 0; attempt < 5; attempt++) {
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((dir + L"\\thumbcache_*.db").c_str(), &fd);
+            bool locked = false;
+            if (h != INVALID_HANDLE_VALUE) {
+                do if (!DeleteFileW((dir + L"\\" + fd.cFileName).c_str())) locked = true;
+                while (FindNextFileW(h, &fd));
+                FindClose(h);
+            }
+            if (!locked) break;
+            Sleep(500);
+        }
+    }
+    CoTaskMemFree(p);
+    Sleep(300);
+    ShellExecuteW(nullptr, L"open", L"explorer.exe", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 static int install() {
     std::wstring dir = installDir();
     SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
@@ -127,10 +170,18 @@ static int install() {
     }
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 
+    if (!g_quiet && MessageBoxW(nullptr,
+            L"Installed!\n\nRefresh File Explorer now so the previews appear?\n\n"
+            L"This clears Windows' saved thumbnails and restarts File Explorer.\n"
+            L"Your taskbar will disappear for a few seconds. That's normal.\n"
+            L"(Recommended, especially if you installed an earlier version.)",
+            APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
+        refreshThumbnailCache();
+
     say(L"Done! EMB thumbnails are now switched on.\n\n"
         L"Open a folder with .emb files in File Explorer and pick\n"
         L"View > Large icons (or Extra large icons).\n\n"
-        L"If you still see plain icons, close File Explorer windows and open them again.\n"
+        L"If you still see plain icons, run this setup again and choose Yes (repair).\n"
         L"To remove it later: Settings > Apps > EMB Thumbnails > Uninstall.");
     return 0;
 }

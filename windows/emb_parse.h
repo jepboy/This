@@ -148,6 +148,195 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// zlib / DEFLATE decompression (RFC 1950/1951). Wilcom compresses the
+// DESIGN_ICON picture: 4-byte little-endian size, then a zlib stream.
+// ---------------------------------------------------------------------------
+
+class Inflater {
+public:
+    // Returns false on any error. 'out' gets at most 'cap' bytes.
+    static bool zlib(const uint8_t* p, size_t n, Bytes& out, size_t cap) {
+        if (n < 2) return false;
+        if ((p[0] & 0x0F) != 8 || (p[0] >> 4) > 7 || ((p[0] << 8) | p[1]) % 31 != 0 || (p[1] & 0x20)) return false;
+        Inflater in(p + 2, n - 2, out, cap);
+        return in.run();
+    }
+
+private:
+    struct Huff {
+        uint16_t count[16];
+        uint16_t sym[320];
+    };
+
+    Inflater(const uint8_t* p, size_t n, Bytes& out, size_t cap) : p_(p), n_(n), out_(out), cap_(cap) {}
+
+    int bit() {
+        if (!bitcnt_) {
+            if (pos_ >= n_) { err_ = true; return 0; }
+            bitbuf_ = p_[pos_++];
+            bitcnt_ = 8;
+        }
+        int b = bitbuf_ & 1;
+        bitbuf_ >>= 1;
+        bitcnt_--;
+        return b;
+    }
+    unsigned bits(int k) {
+        unsigned v = 0;
+        for (int i = 0; i < k; i++) v |= unsigned(bit()) << i;
+        return v;
+    }
+    static bool build(Huff& h, const uint8_t* len, int n) {
+        uint16_t offs[16];
+        memset(h.count, 0, sizeof(h.count));
+        for (int i = 0; i < n; i++) h.count[len[i]]++;
+        h.count[0] = 0;
+        int left = 1;
+        for (int i = 1; i < 16; i++) {
+            left <<= 1;
+            left -= h.count[i];
+            if (left < 0) return false;
+        }
+        offs[1] = 0;
+        for (int i = 1; i < 15; i++) offs[i + 1] = uint16_t(offs[i] + h.count[i]);
+        for (int i = 0; i < n; i++)
+            if (len[i]) h.sym[offs[len[i]]++] = uint16_t(i);
+        return true;
+    }
+    int decode(const Huff& h) {
+        int code = 0, first = 0, index = 0;
+        for (int len = 1; len < 16; len++) {
+            code |= bit();
+            int count = h.count[len];
+            if (code - count < first) return h.sym[index + (code - first)];
+            index += count;
+            first += count;
+            first <<= 1;
+            code <<= 1;
+            if (err_) return -1;
+        }
+        return -1;
+    }
+    bool codes(const Huff& lit, const Huff& dist) {
+        static const uint16_t lbase[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+        static const uint8_t lext[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+        static const uint16_t dbase[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+        static const uint8_t dext[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+        for (;;) {
+            int s = decode(lit);
+            if (s < 0 || err_) return false;
+            if (s < 256) {
+                if (out_.size() >= cap_) return false;
+                out_.push_back(uint8_t(s));
+            } else if (s == 256) {
+                return true;
+            } else {
+                s -= 257;
+                if (s >= 29) return false;
+                size_t len = lbase[s] + bits(lext[s]);
+                int d = decode(dist);
+                if (d < 0 || d >= 30) return false;
+                size_t back = dbase[d] + bits(dext[d]);
+                if (err_ || back > out_.size() || out_.size() + len > cap_) return false;
+                size_t from = out_.size() - back;
+                for (size_t i = 0; i < len; i++) out_.push_back(out_[from + i]);
+            }
+        }
+    }
+    bool stored() {
+        bitbuf_ = 0;
+        bitcnt_ = 0;
+        if (pos_ + 4 > n_) return false;
+        unsigned len = p_[pos_] | (p_[pos_ + 1] << 8);
+        unsigned nlen = p_[pos_ + 2] | (p_[pos_ + 3] << 8);
+        pos_ += 4;
+        if (len != (~nlen & 0xFFFF) || pos_ + len > n_ || out_.size() + len > cap_) return false;
+        out_.insert(out_.end(), p_ + pos_, p_ + pos_ + len);
+        pos_ += len;
+        return true;
+    }
+    bool fixed() {
+        uint8_t l[288];
+        int i = 0;
+        for (; i < 144; i++) l[i] = 8;
+        for (; i < 256; i++) l[i] = 9;
+        for (; i < 280; i++) l[i] = 7;
+        for (; i < 288; i++) l[i] = 8;
+        Huff lit, dist;
+        build(lit, l, 288);
+        for (i = 0; i < 30; i++) l[i] = 5;
+        build(dist, l, 30);
+        return codes(lit, dist);
+    }
+    bool dynamic() {
+        static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+        uint8_t l[320] = {};
+        int nlen = int(bits(5)) + 257, ndist = int(bits(5)) + 1, ncode = int(bits(4)) + 4;
+        if (nlen > 286 || ndist > 30) return false;
+        for (int i = 0; i < ncode; i++) l[order[i]] = uint8_t(bits(3));
+        Huff lencode, lit, dist;
+        if (!build(lencode, l, 19)) return false;
+        memset(l, 0, sizeof(l));
+        int idx = 0;
+        while (idx < nlen + ndist) {
+            int s = decode(lencode);
+            if (s < 0 || err_) return false;
+            if (s < 16) { l[idx++] = uint8_t(s); continue; }
+            int len = 0, rep;
+            if (s == 16) {
+                if (idx == 0) return false;
+                len = l[idx - 1];
+                rep = 3 + int(bits(2));
+            } else if (s == 17) rep = 3 + int(bits(3));
+            else rep = 11 + int(bits(7));
+            if (idx + rep > nlen + ndist) return false;
+            while (rep--) l[idx++] = uint8_t(len);
+        }
+        if (l[256] == 0) return false;
+        if (!build(lit, l, nlen) || !build(dist, l + nlen, ndist)) return false;
+        return codes(lit, dist);
+    }
+    bool run() {
+        int last;
+        do {
+            last = bit();
+            unsigned type = bits(2);
+            if (err_) return false;
+            bool ok = type == 0 ? stored() : type == 1 ? fixed() : type == 2 ? dynamic() : false;
+            if (!ok) return false;
+        } while (!last);
+        return !out_.empty();
+    }
+
+    const uint8_t* p_;
+    size_t n_, pos_ = 0;
+    Bytes& out_;
+    size_t cap_;
+    unsigned bitbuf_ = 0;
+    int bitcnt_ = 0;
+    bool err_ = false;
+};
+
+// Try to inflate a zlib stream near the start of 's' (Wilcom puts a 4-byte
+// size first; also try a few other small offsets).
+inline bool tryInflate(const Bytes& s, Bytes& out) {
+    const size_t cap = 64u << 20;
+    static const size_t offs[] = {4, 0, 8, 2, 6, 12, 16};
+    for (size_t o : offs) {
+        if (o + 2 >= s.size()) continue;
+        out.clear();
+        if (Inflater::zlib(s.data() + o, s.size() - o, out, cap) && out.size() > 32) return true;
+    }
+    for (size_t o = 0; o + 2 < s.size() && o < 64; o++) {
+        if (s[o] != 0x78) continue;
+        out.clear();
+        if (Inflater::zlib(s.data() + o, s.size() - o, out, cap) && out.size() > 32) return true;
+    }
+    out.clear();
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Picture detection
 // ---------------------------------------------------------------------------
 
@@ -310,7 +499,10 @@ inline Picture findPicture(const Bytes& file) {
             continue;
         }
         std::vector<Hit> hits;
-        scan(s.data(), s.size(), hits);
+        // Preferred streams (DESIGN_ICON) are normally zlib-compressed: try that first.
+        Bytes inflated;
+        if ((preferred || s.size() <= (1u << 20)) && tryInflate(s, inflated)) scan(inflated.data(), inflated.size(), hits);
+        if (hits.empty()) scan(s.data(), s.size(), hits);
         if (hits.empty()) continue;
         auto it = std::min_element(hits.begin(), hits.end(), better);
         if (isRaster(it->kind)) {
