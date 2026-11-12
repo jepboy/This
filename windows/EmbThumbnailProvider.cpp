@@ -1,4 +1,5 @@
-// EmbThumbnailProvider.cpp - Windows Explorer thumbnail handler for .EMB files.
+// EmbThumbnailProvider.cpp - Windows Explorer thumbnail handler for .EMB
+// (Wilcom), .CDR (CorelDRAW) and .CST (Tajima DG/ML by Pulse) files.
 //
 // Explorer (through its thumbnail cache) hands us the file as an IStream; we
 // find the preview picture Wilcom stored inside it and return an HBITMAP.
@@ -7,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <new>
+#include <string>
 #include <objbase.h>
 #include <propsys.h>
 #include <shlobj.h>
@@ -160,7 +162,7 @@ public:
     IFACEMETHODIMP Initialize(IStream* stream, DWORD) override {
         if (!stream) return E_INVALIDARG;
         if (!data_.empty()) return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
-        const size_t cap = 128u << 20;
+        const size_t cap = 300u << 20;  // big CorelDRAW files keep the preview at the end (ZIP)
         BYTE buf[65536];
         for (;;) {
             ULONG got = 0;
@@ -247,35 +249,67 @@ static LONG setValue(const wchar_t* key, const wchar_t* name, const wchar_t* val
     return r;
 }
 
-static const wchar_t* kHandlerKeys[] = {
-    L"Software\\Classes\\.emb\\ShellEx\\" THUMB_HANDLER_IID,
-    L"Software\\Classes\\SystemFileAssociations\\.emb\\ShellEx\\" THUMB_HANDLER_IID,
-};
+// File types we provide thumbnails for.
+static const wchar_t* kExts[] = {L".emb", L".cdr", L".cst"};
+
+// We register only under SystemFileAssociations\.ext. Creating
+// HKCU\Software\Classes\.ext itself would hide the machine-wide default value
+// of that key (the program that opens the file) in the merged HKCR view.
+static std::wstring sfaKey(const wchar_t* ext) {
+    return std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext + L"\\ShellEx\\" THUMB_HANDLER_IID;
+}
+// Location used by version 1.0/1.1; removed on install and uninstall.
+static std::wstring legacyKey(const wchar_t* ext) {
+    return std::wstring(L"Software\\Classes\\") + ext + L"\\ShellEx\\" THUMB_HANDLER_IID;
+}
+
+static bool pointsToUs(const std::wstring& key) {
+    wchar_t val[64] = {};
+    DWORD cb = sizeof(val);
+    return RegGetValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, RRF_RT_REG_SZ, nullptr, val, &cb) == ERROR_SUCCESS &&
+           _wcsicmp(val, CLSID_STR) == 0;
+}
+
+// Delete 'key' if it has no values and no subkeys.
+static bool deleteIfEmpty(const std::wstring& key) {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+    DWORD subkeys = 1, values = 1;
+    RegQueryInfoKeyW(k, nullptr, nullptr, nullptr, &subkeys, nullptr, nullptr, &values, nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(k);
+    return subkeys == 0 && values == 0 && RegDeleteKeyW(HKEY_CURRENT_USER, key.c_str()) == ERROR_SUCCESS;
+}
+
+static void removeHandlerKey(const std::wstring& key) {
+    if (!pointsToUs(key)) return;
+    RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+    // Remove now-empty parents (…\ShellEx, then …\.ext) so nothing is left masking HKLM.
+    std::wstring parent = key.substr(0, key.rfind(L'\\'));
+    if (deleteIfEmpty(parent)) deleteIfEmpty(parent.substr(0, parent.rfind(L'\\')));
+}
 
 extern "C" HRESULT __stdcall DllRegisterServer() {
     wchar_t path[MAX_PATH];
     if (!GetModuleFileNameW(g_module, path, MAX_PATH)) return HRESULT_FROM_WIN32(GetLastError());
     const wchar_t* clsidKey = L"Software\\Classes\\CLSID\\" CLSID_STR;
     const wchar_t* inproc = L"Software\\Classes\\CLSID\\" CLSID_STR L"\\InprocServer32";
-    LONG r = setValue(clsidKey, nullptr, L"EMB Embroidery Thumbnail Provider");
+    LONG r = setValue(clsidKey, nullptr, L"EMB/CDR/CST Thumbnail Provider");
     if (!r) r = setValue(inproc, nullptr, path);
     if (!r) r = setValue(inproc, L"ThreadingModel", L"Apartment");
-    for (const wchar_t* k : kHandlerKeys)
-        if (!r) r = setValue(k, nullptr, CLSID_STR);
+    for (const wchar_t* ext : kExts) {
+        removeHandlerKey(legacyKey(ext));
+        if (!r) r = setValue(sfaKey(ext).c_str(), nullptr, CLSID_STR);
+    }
     // Mark as approved (only enforced on locked-down machines, harmless otherwise).
-    if (!r) setValue(L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved", CLSID_STR, L"EMB Embroidery Thumbnail Provider");
+    if (!r) setValue(L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved", CLSID_STR, L"EMB/CDR/CST Thumbnail Provider");
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return HRESULT_FROM_WIN32(r);
 }
 
 extern "C" HRESULT __stdcall DllUnregisterServer() {
-    // Only remove handler keys that still point at us.
-    for (const wchar_t* k : kHandlerKeys) {
-        wchar_t val[64] = {};
-        DWORD cb = sizeof(val);
-        if (RegGetValueW(HKEY_CURRENT_USER, k, nullptr, RRF_RT_REG_SZ, nullptr, val, &cb) == ERROR_SUCCESS &&
-            _wcsicmp(val, CLSID_STR) == 0)
-            RegDeleteTreeW(HKEY_CURRENT_USER, k);
+    for (const wchar_t* ext : kExts) {
+        removeHandlerKey(sfaKey(ext));
+        removeHandlerKey(legacyKey(ext));
     }
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\" CLSID_STR);
     HKEY k;

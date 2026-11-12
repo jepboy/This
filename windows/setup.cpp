@@ -14,7 +14,7 @@
 #include <string>
 
 #define APP_NAME L"EMB Thumbnails"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.2.0"
 #define CLSID_STR L"{0678313A-B65C-412B-B332-4A248F11483E}"
 #define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\EmbThumbnails"
 #define IDR_DLL 101
@@ -157,7 +157,7 @@ static int install() {
 
     HKEY k;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, UNINSTALL_KEY, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) == ERROR_SUCCESS) {
-        setStr(k, L"DisplayName", APP_NAME L" (Explorer previews for .EMB embroidery files)");
+        setStr(k, L"DisplayName", APP_NAME L" (Explorer previews for .EMB, .CDR and .CST files)");
         setStr(k, L"DisplayVersion", APP_VERSION);
         setStr(k, L"DisplayIcon", setup);
         setStr(k, L"InstallLocation", dir);
@@ -178,25 +178,29 @@ static int install() {
             APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
         refreshThumbnailCache();
 
-    say(L"Done! EMB thumbnails are now switched on.\n\n"
-        L"Open a folder with .emb files in File Explorer and pick\n"
+    say(L"Done! Thumbnails for .EMB, .CDR and .CST files are now switched on.\n\n"
+        L"Open a folder with your designs in File Explorer and pick\n"
         L"View > Large icons (or Extra large icons).\n\n"
         L"If you still see plain icons, run this setup again and choose Yes (repair).\n"
         L"To remove it later: Settings > Apps > EMB Thumbnails > Uninstall.");
     return 0;
 }
 
+// Used only if the DLL is missing: remove our keys by hand.
 static void removeKeysDirectly() {
-    const wchar_t* keys[] = {
-        L"Software\\Classes\\.emb\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}",
-        L"Software\\Classes\\SystemFileAssociations\\.emb\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}",
-    };
-    for (const wchar_t* key : keys) {
-        wchar_t val[64] = {};
-        DWORD cb = sizeof(val);
-        if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, val, &cb) == ERROR_SUCCESS &&
-            _wcsicmp(val, CLSID_STR) == 0)
-            RegDeleteTreeW(HKEY_CURRENT_USER, key);
+    const wchar_t* exts[] = {L".emb", L".cdr", L".cst"};
+    for (const wchar_t* ext : exts) {
+        std::wstring keys[] = {
+            std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext + L"\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}",
+            std::wstring(L"Software\\Classes\\") + ext + L"\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}",
+        };
+        for (const std::wstring& key : keys) {
+            wchar_t val[64] = {};
+            DWORD cb = sizeof(val);
+            if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, RRF_RT_REG_SZ, nullptr, val, &cb) == ERROR_SUCCESS &&
+                _wcsicmp(val, CLSID_STR) == 0)
+                RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+        }
     }
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\" CLSID_STR);
 }
@@ -220,7 +224,7 @@ static int uninstall() {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
-    say(L"EMB thumbnails have been removed.");
+    say(L"EMB Thumbnails has been removed.");
     return 0;
 }
 
@@ -245,7 +249,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             action = r == IDYES ? 1 : r == IDNO ? 2 : 0;
         } else {
             int r = MessageBoxW(nullptr,
-                L"Show thumbnails of .EMB embroidery files in Windows File Explorer?\n\n"
+                L"Show thumbnails of .EMB (Wilcom), .CDR (CorelDRAW) and .CST (Pulse)\nfiles in Windows File Explorer?\n\n"
                 L"This installs a small preview add-on for your user account only.\n"
                 L"No administrator rights needed. Your EMB files are never changed.",
                 APP_NAME L" Setup", MB_OKCANCEL | MB_ICONQUESTION);

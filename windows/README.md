@@ -1,5 +1,7 @@
 # EMB Thumbnails for Windows File Explorer
 
+Previews for **.EMB** (Wilcom), **.CDR** (CorelDRAW) and **.CST** (Tajima DG/ML by Pulse) files.
+
 See previews of your **.EMB** (Wilcom) embroidery designs right in File Explorer,
 the same way you see photo thumbnails. No Python and no Wilcom software needed.
 
@@ -10,9 +12,23 @@ the same way you see photo thumbnails. No Python and no Wilcom software needed.
 2. Double-click it and click **OK**.
    - If Windows shows *"Windows protected your PC"*, click **More info**, then **Run anyway**.
      This appears because the program isn't code-signed.
-3. Open a folder with .emb files and choose **View > Large icons** (or **Extra large icons**).
+3. Open a folder with your design files and choose **View > Large icons** (or **Extra large icons**).
 
 No administrator password is needed. It installs only for your own Windows account.
+
+**After a restart** it keeps working, with nothing to start. It isn't a program that runs in the
+background: File Explorer loads it by itself whenever it needs a thumbnail.
+
+## Supported files
+
+| Type | Where the preview comes from | Status |
+|---|---|---|
+| `.emb` Wilcom | the compressed `DESIGN_ICON` picture inside the file | Tested on sample files built to match the real layout |
+| `.cdr` CorelDRAW X4 and newer | `previews/` / `thumbnail` picture inside the file (it's a ZIP) | Tested on sample files built to match the real layout |
+| `.cdr` CorelDRAW X3 and older | the `DISP` preview section | Tested on sample files built to match the real layout |
+| `.cst` Tajima DG/ML by Pulse | No public spec. Searches the file for any embedded picture | **Best guess**: works only if the file stores a preview |
+
+If CorelDRAW is installed and already shows its own previews, Windows may keep using Corel's.
 
 ## Remove
 

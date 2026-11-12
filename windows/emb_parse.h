@@ -1,4 +1,5 @@
-// emb_parse.h - find the preview picture inside a Wilcom .EMB file.
+// emb_parse.h - find the preview picture inside .EMB (Wilcom), .CDR (CorelDRAW)
+// and .CST (Tajima DG/ML by Pulse) files.
 //
 // Portable C++17, no OS calls, so it can be unit-tested anywhere.
 // An EMB file is an OLE2 / Compound File Binary container. Wilcom stores a
@@ -159,6 +160,11 @@ public:
         if (n < 2) return false;
         if ((p[0] & 0x0F) != 8 || (p[0] >> 4) > 7 || ((p[0] << 8) | p[1]) % 31 != 0 || (p[1] & 0x20)) return false;
         Inflater in(p + 2, n - 2, out, cap);
+        return in.run();
+    }
+    // Raw DEFLATE (as used inside ZIP files).
+    static bool raw(const uint8_t* p, size_t n, Bytes& out, size_t cap) {
+        Inflater in(p, n, out, cap);
         return in.run();
     }
 
@@ -459,6 +465,109 @@ inline bool summaryThumb(const Bytes& s, Picture& out) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// ZIP containers (CorelDRAW X4 and later keep previews/*.png inside a ZIP)
+// ---------------------------------------------------------------------------
+
+inline bool endsWith(const std::string& s, const char* suf) {
+    size_t n = strlen(suf);
+    return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
+}
+
+inline Kind magicKind(const Bytes& b) {
+    if (b.size() < 16) return Kind::None;
+    if (memcmp(b.data(), "\x89PNG", 4) == 0) return Kind::Png;
+    if (b[0] == 0xFF && b[1] == 0xD8) return Kind::Jpg;
+    if (b[0] == 'B' && b[1] == 'M') return Kind::Bmp;
+    if (memcmp(b.data(), "GIF8", 4) == 0) return Kind::Gif;
+    return Kind::None;
+}
+
+inline Picture findPictureZip(const Bytes& f) {
+    Picture best;
+    size_t n = f.size();
+    if (n < 22) return best;
+    // End of central directory: last 22..65557 bytes.
+    size_t eocd = SIZE_MAX;
+    for (size_t i = n - 22 + 1; i-- > 0 && n - i <= 65557;)
+        if (u32(&f[i]) == 0x06054b50) { eocd = i; break; }
+    if (eocd == SIZE_MAX) return best;
+    uint32_t cdSize = u32(&f[eocd + 12]), cdOff = u32(&f[eocd + 16]);
+    unsigned count = u16(&f[eocd + 10]);
+    if (uint64_t(cdOff) + cdSize > n) return best;
+    int bestScore = -1;
+    size_t bestSize = 0;
+    size_t q = cdOff;
+    for (unsigned k = 0; k < count && q + 46 <= n && u32(&f[q]) == 0x02014b50; k++) {
+        unsigned method = u16(&f[q + 10]);
+        uint32_t csize = u32(&f[q + 20]), usize = u32(&f[q + 24]);
+        unsigned nl = u16(&f[q + 28]), xl = u16(&f[q + 30]), cl = u16(&f[q + 32]);
+        uint32_t lho = u32(&f[q + 42]);
+        if (q + 46 + nl > n) break;
+        std::string name;
+        for (unsigned i = 0; i < nl; i++) name += char(tolower(f[q + 46 + i]));
+        q += 46 + size_t(nl) + xl + cl;
+
+        bool img = endsWith(name, ".png") || endsWith(name, ".bmp") || endsWith(name, ".jpg") || endsWith(name, ".jpeg");
+        if (!img) continue;
+        int score = 0;
+        if (name.find("thumbnail") != std::string::npos) score = 3;
+        else if (name.compare(0, 9, "previews/") == 0 || name.find("/thumbnails/") != std::string::npos) score = 2;
+        else if (name.find("preview") != std::string::npos || name.find("thumb") != std::string::npos || name.find("icon") != std::string::npos) score = 1;
+        else continue;  // other pictures in the archive are document content, not previews
+        if (score < bestScore || (score == bestScore && usize <= bestSize)) continue;
+        if (usize > (64u << 20) || uint64_t(lho) + 30 > n || u32(&f[lho]) != 0x04034b50) continue;
+        size_t data = size_t(lho) + 30 + u16(&f[lho + 26]) + u16(&f[lho + 28]);
+        if (uint64_t(data) + csize > n) continue;
+        Bytes out;
+        if (method == 0) out.assign(f.begin() + data, f.begin() + data + csize);
+        else if (method != 8 || !Inflater::raw(&f[data], csize, out, size_t(usize) + 16)) continue;
+        Kind kind = magicKind(out);
+        if (kind == Kind::None) continue;
+        bestScore = score;
+        bestSize = usize;
+        best.kind = kind;
+        best.data = std::move(out);
+        best.where = name;
+    }
+    return best;
+}
+
+// ---------------------------------------------------------------------------
+// RIFF containers (CorelDRAW up to X3: the "DISP" chunk is the preview)
+// ---------------------------------------------------------------------------
+
+inline Picture findPictureRiff(const Bytes& f) {
+    Picture p;
+    for (size_t i = 12; i + 12 + 40 <= f.size(); i++) {
+        if (f[i] != 'D' || memcmp(&f[i], "DISP", 4) != 0) continue;
+        uint32_t len = u32(&f[i + 4]);
+        size_t avail = std::min<size_t>(f.size() - (i + 12), len > 4 ? len - 4 : 0);
+        Bytes bmp = dibToBmp(&f[i + 12], avail);
+        if (bmp.empty()) bmp = dibToBmp(&f[i + 8], std::min<size_t>(f.size() - (i + 8), len));
+        if (!bmp.empty()) {
+            p.kind = Kind::Bmp;
+            p.data = std::move(bmp);
+            p.where = "DISP";
+            return p;
+        }
+    }
+    return p;
+}
+
+inline Picture findPictureRaw(const Bytes& file) {
+    Picture best;
+    std::vector<Hit> hits;
+    Bytes inflated;
+    if (tryInflate(file, inflated)) scan(inflated.data(), inflated.size(), hits);
+    if (hits.empty()) scan(file.data(), file.size(), hits);
+    if (!hits.empty()) {
+        auto it = std::min_element(hits.begin(), hits.end(), better);
+        best.kind = it->kind; best.data = std::move(it->data); best.where = "raw";
+    }
+    return best;
+}
+
 inline int streamRank(const std::string& name) {
     static const char* pref[] = {"DESIGN_ICON", "THUMBNAIL", "PREVIEW", "ICON"};
     for (int i = 0; i < 4; i++)
@@ -469,16 +578,16 @@ inline int streamRank(const std::string& name) {
 // Main entry point.
 inline Picture findPicture(const Bytes& file) {
     Picture best;
-    Cfb cfb;
-    if (!cfb.open(file)) {
-        std::vector<Hit> hits;
-        scan(file.data(), file.size(), hits);
-        if (!hits.empty()) {
-            auto it = std::min_element(hits.begin(), hits.end(), better);
-            best.kind = it->kind; best.data = std::move(it->data); best.where = "raw";
-        }
-        return best;
+    if (file.size() >= 4 && u32(file.data()) == 0x04034b50) {  // ZIP (CorelDRAW X4+)
+        best = findPictureZip(file);
+        return best.kind != Kind::None ? best : findPictureRaw(file);
     }
+    if (file.size() >= 12 && memcmp(file.data(), "RIFF", 4) == 0) {  // CorelDRAW <= X3
+        best = findPictureRiff(file);
+        return best.kind != Kind::None ? best : findPictureRaw(file);
+    }
+    Cfb cfb;
+    if (!cfb.open(file)) return findPictureRaw(file);
     std::vector<const Entry*> streams;
     for (const Entry& e : cfb.entries())
         if (e.type == 2) streams.push_back(&e);
