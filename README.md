@@ -53,3 +53,29 @@ Carved files lose their original names and folders, and fragmented files may com
 | You want more file types or a guided interface | Run [TestDisk and PhotoRec](https://www.cgsecurity.org/) **on the image**. TestDisk rebuilds partition tables, and PhotoRec carves hundreds of formats. |
 
 On Windows, the safest route is to boot a Linux live USB and follow the steps above.
+
+---
+
+# embthumbs
+
+See the thumbnails of Wilcom **.EMB** embroidery files, without Wilcom installed.
+One Python 3 file, no dependencies, works on Windows, macOS and Linux. It only reads your files.
+
+EMB files are Microsoft "compound document" containers. Wilcom puts a small preview picture
+inside (usually in a part called `DESIGN_ICON`). `embthumbs` pulls that picture out.
+
+```bash
+# Build a thumbnail gallery for a whole folder (subfolders included), then open emb_gallery/index.html
+python3 embthumbs.py gallery "C:\Designs" -o emb_gallery
+
+# Save the preview picture(s) of one file
+python3 embthumbs.py extract design.emb -o previews
+
+# Troubleshoot one file: list what's inside it
+python3 embthumbs.py info design.emb
+```
+
+In the gallery you can filter by name, resize the thumbnails, and click one to open the EMB file.
+
+If a file shows "no preview", run `info` on it and share the output. Some EMB versions may store
+the preview in a format this tool doesn't decode yet.
